@@ -78,7 +78,7 @@ class PPEG(nn.Module):
 class TransMIL(MIL):
     def __init__(self, in_dim: int, embed_dim: int,
                  num_fc_layers: int, dropout: float,
-                 num_attention_layers: int, num_classes: int, num_heads: int=8):
+                 num_attention_layers: int, num_classes: int, num_heads: int=8, task_type='classification'):
         """
         TransMIL model with transformer-based Multi-instance Learning.
 
@@ -90,7 +90,7 @@ class TransMIL(MIL):
             n_attention_layers (int): Number of transformer attention layers.
             n_classes (int): Number of output classes for classification.
         """
-        super(TransMIL, self).__init__(in_dim=in_dim, embed_dim=embed_dim, num_classes=num_classes)
+        super(TransMIL, self).__init__(in_dim=in_dim, embed_dim=embed_dim, num_classes=num_classes, task_type=task_type)
         self.patch_embed: nn.Module = create_mlp(
             in_dim=in_dim,
             hid_dims=[embed_dim] * (num_fc_layers - 1),
@@ -224,7 +224,7 @@ class TransMIL(MIL):
                 label: torch.LongTensor=None,
                 attn_mask=None,
                 return_attention: bool = False,
-                return_slide_feats: bool = False) -> tuple:
+                return_slide_feats: bool = False, censorship=None) -> tuple:
         """
         Complete forward pass of the model.
 
@@ -234,6 +234,9 @@ class TransMIL(MIL):
         Returns:
             tuple: Slide-level features and logits from the classifier.
         """
+        if self.task_type == 'survival':
+            return self.forward_survival(h, label, censorship, loss_fn, attn_mask,
+                                         return_attention, return_slide_feats)
         wsi_feats, intermeds = self.forward_features(h, return_attention=return_attention)
         logits = self.forward_head(wsi_feats)
         cls_loss = self.compute_loss(loss_fn=loss_fn, label=label, logits=logits)
@@ -290,8 +293,11 @@ class TransMILModel(PreTrainedModel):
             num_fc_layers=config.num_fc_layers,
             dropout=config.dropout,
             num_heads=config.num_heads,
-            num_attention_layers=config.num_attention_layers
+            num_attention_layers=config.num_attention_layers,
+            task_type=getattr(config, 'task_type', 'classification')
         )
+        config.task_type = self.model.task_type
+        config.n_bins = self.model.n_bins
         self.forward = self.model.forward
         self.forward_features = self.model.forward_features
         self.forward_head = self.model.forward_head

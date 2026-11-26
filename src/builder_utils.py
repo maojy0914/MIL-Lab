@@ -18,14 +18,6 @@ from torch.hub import load_state_dict_from_url
 _DOWNLOAD_PROGRESS = False
 _CHECK_HASH = False
 
-def _cfg(url: str = '', **kwargs) -> Dict[str, Any]:
-    return {
-        'url': url,
-        'head': 'head',
-        **kwargs,
-    }
-
-
 def clean_state_dict(state_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
     Cleans a state dictionary by removing the .module prefix from keys if it exists.
@@ -299,8 +291,8 @@ def load_pretrained(
     load_from, pretrained_loc = _resolve_pretrained_source(pretrained_cfg)
 
     if from_pretrained:
-        model = load_from_hf(pretrained_loc, local_folder=pretrained_cfg['local_path_parent'])
-        state_dict = model.state_dict()
+        source_model = load_from_hf(pretrained_loc, local_folder=pretrained_cfg['local_path_parent'])
+        state_dict = source_model.state_dict()
     elif load_from == 'hf-hub':
         logger.info(f'Loading pretrained weights from Hugging Face hub ({pretrained_loc})')
         state_dict = download_hf_state_dict(pretrained_loc, save_path=pretrained_cfg['local_path_parent'])
@@ -322,15 +314,9 @@ def load_pretrained(
         raise RuntimeError(f"No pretrained weights exist for {model_name}. Use `pretrained=False` for random init.")
 
     if filter_fn is not None:
-        try:
-            state_dict = filter_fn(state_dict, model)
-        except TypeError as e:
-            # for backwards compat with filter fn that take one arg
-            state_dict = filter_fn(state_dict)
+        state_dict = filter_fn(state_dict, model)
     if not keep_classifier:
         state_dict = {k: v for k, v in state_dict.items() if not k.startswith('model.classifier.')}
-    if hasattr(model, 'clean_state_dict'):
-        state_dict = model.clean_state_dict(state_dict)
     load_result = model.load_state_dict(state_dict, strict=strict)
     if load_result.missing_keys:
         logger.info(

@@ -16,12 +16,6 @@ from src.models.mil_template import MIL
 #from utils import eval_metric
 from dataclasses import dataclass
 
-from src.builder_utils import _cfg, build_model_with_cfg
-_model_default_cfgs = {
-    'default': _cfg(),
-}
-
-
 class Attention_with_Classifier(nn.Module):
     def __init__(self, L=512, D=128, K=1, num_cls=2, droprate=0):
         super(Attention_with_Classifier, self).__init__()

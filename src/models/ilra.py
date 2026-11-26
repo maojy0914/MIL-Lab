@@ -111,8 +111,8 @@ class NLP(nn.Module):
 
 class ILRA(MIL):
     def __init__(self, in_dim, embed_dim, num_heads, 
-                 topk, num_attention_layers, num_classes, ln=True, mode='classification'):
-        super().__init__(in_dim=in_dim, embed_dim=embed_dim, num_classes=num_classes)
+                 topk, num_attention_layers, num_classes, ln=True, mode='classification', task_type='classification'):
+        super().__init__(in_dim=in_dim, embed_dim=embed_dim, num_classes=num_classes, task_type=task_type)
         self.mode = mode
         topk = topk
 
@@ -158,7 +158,10 @@ class ILRA(MIL):
     def forward(self, h, label: torch.LongTensor=None,
                 loss_fn: nn.Module=None,
                 return_attention=False,
-                **kwargs):
+                attn_mask=None, return_slide_feats=False, censorship=None, **kwargs):
+        if self.task_type == 'survival':
+            return self.forward_survival(h, label, censorship, loss_fn, attn_mask,
+                                         return_attention, return_slide_feats)
         if self.mode == 'classification':
             slide_feats, attention = self.forward_features(h, return_attention=return_attention)
             logits = self.forward_head(slide_feats)
@@ -168,16 +171,6 @@ class ILRA(MIL):
             if return_attention:
                 log_dict['attention'] = attention
 
-        elif self.mode == 'survival': # todo
-            attention_mask = kwargs['attn_mask']
-            label = kwargs['label']
-            censorship = kwargs['censorship']
-            loss_fn = kwargs['loss_fn']
-
-            out = self.forward_no_loss(h)
-            logits = out['logits']
-
-            results_dict, log_dict = process_surv(logits, label, censorship, loss_fn)
         else:
             raise NotImplementedError("Not Implemented!")
 
@@ -227,8 +220,11 @@ class ILRAModel(PreTrainedModel):
             num_classes=config.num_classes,
             num_attention_layers=config.num_attention_layers,
             num_heads=config.num_heads,
-            topk=config.topk
+            topk=config.topk,
+            task_type=getattr(config, 'task_type', 'classification')
         )
+        config.task_type = self.model.task_type
+        config.n_bins = self.model.n_bins
         self.forward = self.model.forward
         self.forward_attention = self.model.forward_attention
         self.forward_features = self.model.forward_features

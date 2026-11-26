@@ -154,6 +154,83 @@ results_dict, log_dict = model(features,
 **Additional bits** 
 - For models which use auxiliary loss, including CLAM and DFTD, the `label` and `loss_fn` arguments are required. Note that models with augmented loss will return both `loss` indicating a weighted loss between `loss_fn()` and the auxiliary loss. The loss from only `loss_fn` can be accessed via `log_dict['cls_loss']`
 
+## Discrete-time survival prediction
+
+All ten registered models support `task_type='classification'` (default).
+The other eight models also support `task_type='survival'`; CLAM and DFTD retain
+their original classification implementations. Calling `create_model` with
+`'clam'` or `'dftd'` and `task_type='survival'` prints one explanatory line and
+returns `None`. The model-name suffix (for
+example, `pc108`) still selects the **pretraining dataset**, independently of
+the downstream task.
+
+```python
+from src.builder import create_model
+import torch
+
+# Existing classification calls are unchanged.
+classifier = create_model('abmil', num_classes=2)
+
+# Same MIL architecture, Patch-GCN-style discrete-time survival objective.
+model = create_model('abmil', task_type='survival', n_bins=4)
+features = torch.randn(2, 100, 1024)  # [bags, patches, feature_dim]
+result, logs = model(
+    features,
+    label=torch.tensor([1, 3]),       # observed time-bin indices, 0..3
+    censorship=torch.tensor([0, 1]), # 0=observed event, 1=right-censored
+)
+result['loss'].backward()
+
+# Labels are not required for inference.
+model.eval()
+with torch.no_grad():
+    result, logs = model(features)
+```
+
+- `num_classes` controls classification output size (default 2); `n_bins`
+  controls survival output size (default 4). Each task uses its own parameter.
+- Survival returns `logits`, `hazards`, `survival` ([B, n_bins]), `risk` ([B]),
+  and `loss` (None without labels). Hazards are **conditional event probabilities**
+  from sigmoid, not softmax classes. `survival = cumprod(1 - hazards)` and
+  `risk = -survival.sum(dim=1)`; higher risk means shorter predicted survival.
+- Training uses the censored discrete-time NLL, computed stably from logits.
+  `label` and `censorship` must be supplied together. Optional custom losses use
+  `loss_fn(logits, label, censorship)`; `src.models.mil_template.NLLSurvLoss(alpha=0.0)` is the
+  default. Ordinary classification cross-entropy is not a survival loss.
+- Survival accepts [N,D] or [B,N,D]. Optional `attn_mask` [B,N] uses 1 for valid
+  patches and 0 for padding. Bags are processed individually after padding is
+  removed, preserving models originally restricted to one bag per forward.
+  Optional `logs['attention']` and `logs['slide_feats']` are lists, one entry per
+  unpadded bag; attention retains each architecture's native meaning.
+- DSMIL retains its instance/bag prediction fusion, with output channels
+  representing time intervals in survival mode.
+- The shared NLL and bag-level survival flow live in `models/mil_template.py`.
+- The library still provides models, not datasets or a training framework. Fit
+  time-bin boundaries using **training patients only**, apply the same boundaries
+  to validation/test, and save them with the experiment. Keep all slides from one
+  patient in the same split. Continuous follow-up times are needed externally
+  for C-index evaluation; the model consumes bin indices, not raw times.
+
+Save/reload the task and architecture together:
+
+```python
+from src.builder import save_model
+from transformers import AutoModel
+
+save_model(model, 'abmil_survival', save_folder='/path/to/checkpoints')
+restored = AutoModel.from_pretrained('/path/to/checkpoints/abmil_survival')
+```
+
+The saved `config.json` records `task_type`, `n_bins`, and architecture parameters.
+Import `src.builder` before `AutoModel` loading to register the custom models.
+Bin boundaries and follow-up metadata remain the training project's responsibility.
+Official FEATHER-24K weights exclude the pretraining classification head.
+Loading retains the original `model.classifier` filtering/reinitialization with
+`keep_classifier=False` (default), without additional instance/auxiliary-head
+filtering. To restore an already trained survival checkpoint through
+`create_model`, specify the matching task/architecture and `keep_classifier=True`;
+`AutoModel.from_pretrained` restores the saved config automatically.
+
 # 🔨 3. **Customize MIL-Lab**
 Users can flexibly introduce new 1) hyperparameter configurations, 2) encoders, and 3) MIL architectures.
 > [!NOTE]

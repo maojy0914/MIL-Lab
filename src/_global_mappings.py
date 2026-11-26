@@ -1,4 +1,4 @@
-from src.models import abmil, transmil, transformer, ilra, dftd, clam, rrt, wikg, dsmil
+from src.models import camil, abmil, transmil, transformer, ilra, dftd, clam, rrt, wikg, dsmil
 import pathlib
 import os
 REPO_PATH = str(pathlib.Path(__file__).parent.resolve())  # absolute path to repo root
@@ -23,6 +23,7 @@ ENCODER_DIM_MAPPING : dict[str, int] = {
 }
 
 MODEL_ENTRYPOINTS = {
+    'camil': (camil.CAMILModel, camil.CAMILConfig),
     'abmil': (abmil.ABMILModel, abmil.ABMILGatedBaseConfig),
     'transmil': (transmil.TransMILModel, transmil.TransMILConfig),
     'transformer': (transformer.TransformerModel, transformer.TransformerConfig),

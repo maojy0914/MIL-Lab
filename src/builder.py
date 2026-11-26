@@ -5,7 +5,7 @@ import yaml
 import os
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from src.builders.ModelDict import ModelDict
-from src.builder_utils import _cfg, build_model_with_cfg
+from src.builder_utils import build_model_with_cfg
 from src._global_mappings import REPO_PATH, CONFIG_PATH, ENCODER_DIM_MAPPING, MODEL_ENTRYPOINTS, MODEL_SAVE_PATH  # todo, should this be all caps or not?
 from pathlib import Path
 
@@ -27,20 +27,22 @@ def save_model(model: nn.Module,
     Path(model_path).mkdir(parents=True, exist_ok=True)
     if isinstance(model, PreTrainedModel) and save_pretrained:
         model.save_pretrained(model_path)
-        if hasattr(model, 'config'):
-            model.config.save_pretrained(model_path)
     torch.save(model.state_dict(), os.path.join(model_path, 'pytorch_model.bin'))
+    if hasattr(model, 'config'):
+        model.config.save_pretrained(model_path)
     print(f'Model saved to {model_path}')
 
 
 def create_model(
         model_name: str,
-        num_classes: int = 2,
+        num_classes: Optional[int] = None,
         checkpoint_path: str = '',
         hf_base_repo: str = 'mahmoodlab/',
         from_pretrained: bool = False,
         pretrained_strict: bool = False,
         keep_classifier: bool = False,
+        task_type: str = 'classification',
+        n_bins: Optional[int] = None,
         **kwargs,
 ):
     """
@@ -48,7 +50,9 @@ def create_model(
 
     Args:
         model_name (str): The full model name string, e.g. "abmil.base.uni.op-108".
-        num_classes (int): Number of output classes for the model. Defaults to -1.
+        num_classes (int): Classification output size (default: 2). Not used for survival.
+        task_type (str): 'classification' (default) or discrete-time 'survival'.
+        n_bins (int): Survival time intervals (default: 4); only valid for survival.
         checkpoint_path (str, optional): Path to a checkpoint file to load weights from. If provided, overrides local path in pretrained_cfg. Defaults to ''.
         hf_base_repo (str, optional): Base Hugging Face repository for model weights. Defaults to 'mahmoodlab/'.
         from_pretrained (bool, optional): If True, load model using Hugging Face's from_pretrained method. Defaults to False.
@@ -57,26 +61,34 @@ def create_model(
         **kwargs: Additional keyword arguments passed to the model builder.
 
     Returns:
-        nn.Module: Instantiated model object.
+        nn.Module: Instantiated model object; None for unsupported CLAM/DFTD survival.
 
     Raises:
         ValueError: If pretrained=True but no pretrained config is available for the model.
         NotImplementedError: If the model name is not in the available models.
     """
+    if task_type == 'survival' and model_name.split('.')[0] in ('clam', 'dftd'):
+        print(f'{model_name.split(".")[0].upper()} supports classification only; survival prediction is not supported.')
+        return None
+    if task_type == 'survival':
+        output_dim = 4 if n_bins is None else n_bins
+    else:
+        output_dim = 2 if num_classes is None else num_classes
     model_dict = ModelDict.from_string(model_name)
+    kwargs.update(task_type=task_type, n_bins=output_dim if task_type == 'survival' else None)
     pretrained_cfg = _create_pretrained_config(model_dict,
                                                hf_source=hf_base_repo,
                                                local_source=MODEL_SAVE_PATH)
 
     # override checkpoint path if provided
     pretrained_cfg = _update_checkpoint_path(checkpoint_path, pretrained_cfg)
-    from_pretrained = from_pretrained and model_dict.is_pretrained()
+    from_pretrained = from_pretrained and model_dict.is_pretrained() and not checkpoint_path
     model = build_model(
         model_name=model_dict.model_name,
         model_config=model_dict.model_config,
-        pretrained=model_dict.is_pretrained(),
+        pretrained=bool(checkpoint_path) or model_dict.is_pretrained(),
         encoder=model_dict.encoder,
-        num_classes=num_classes,
+        num_classes=output_dim,
         pretrained_cfg=pretrained_cfg,
         from_pretrained=from_pretrained ,
         pretrained_strict=pretrained_strict,
@@ -91,7 +103,7 @@ def _update_checkpoint_path(checkpoint_path: str, pretrained_cfg: Dict[str, Any]
     """
     Update the checkpoint path in the pretrained config.
     """
-    if checkpoint_path and os.path.exists(checkpoint_path):  
+    if checkpoint_path:
         logger.warning(f'Checkpoint path manually provided ({checkpoint_path}). Overwriting previous local filepath {pretrained_cfg.get("local_path", "")}.')
         pretrained_cfg['file'] = checkpoint_path
     return pretrained_cfg
@@ -180,10 +192,10 @@ def _create_pretrained_config(name_dict: ModelDict,
     Returns:
         Dict: A configuration dictionary containing keys such as 'hf_hub_id', 'local_path_parent', and 'local_path'.
     """
-    default_cfg = _cfg() 
     model_path = name_dict.to_string()
-    default_cfg['hf_hub_id'] = os.path.join(hf_source, model_path).replace('\\', '/')
-    default_cfg['local_path_parent'] = os.path.join(REPO_PATH, local_source, model_path)
-    default_cfg['local_path'] = os.path.join(REPO_PATH, local_source, model_path)
-    return default_cfg
+    return {
+        'hf_hub_id': os.path.join(hf_source, model_path).replace('\\', '/'),
+        'local_path_parent': os.path.join(REPO_PATH, local_source, model_path),
+        'local_path': os.path.join(REPO_PATH, local_source, model_path),
+    }
 

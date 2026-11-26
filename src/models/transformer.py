@@ -38,12 +38,10 @@ class TransLayer(nn.Module):
         x = MIL.ensure_unbatched(x)
         x = x.view(x.shape[0], 1, x.shape[-1])  # no batch first
         norm_x = self.norm(x)
-        out = self.attention(norm_x, norm_x, norm_x,
-                             need_weights=need_weights,
-                             average_attn_weights=True)
-        if need_weights:
-            out, attention_weights = out
-        x = x + out[0]
+        out, attention_weights = self.attention(norm_x, norm_x, norm_x,
+                                                need_weights=need_weights,
+                                                average_attn_weights=True)
+        x = x + out
         x = x.squeeze(1)
         if self.mlp is not None:
             x = x + self.mlp(self.norm2(x))
@@ -63,11 +61,10 @@ class Transformer(MIL):
                  dropout: float = 0.25,
                  num_attention_layers: int = 2,
                  num_heads: int = 8,
-                 encoder_mlp_dim: int = -1,
-                 ):
+                 encoder_mlp_dim: int = -1, task_type='classification'):
         super(Transformer, self).__init__(in_dim=in_dim,
                                           embed_dim=embed_dim,
-                                          num_classes=num_classes)
+                                          num_classes=num_classes, task_type=task_type)
         self.num_attention_layers = num_attention_layers
         self.dropout = dropout
         self.patch_embed = create_mlp(in_dim=in_dim,
@@ -151,7 +148,7 @@ class Transformer(MIL):
 
     def forward(self, h: torch.Tensor, loss_fn: nn.Module=None,
                 label: torch.LongTensor=None, attn_mask: torch.Tensor=None, return_attention: bool=False,
-                return_slide_feats: bool = False) -> tuple[dict, dict]:
+                return_slide_feats: bool = False, censorship=None) -> tuple[dict, dict]:
         """
         Complete forward pass of the Transformer MIL model.
 
@@ -166,6 +163,9 @@ class Transformer(MIL):
             results_dict (dict): Dictionary containing 'logits' and 'cls_loss'.
             log_dict (dict): Dictionary containing intermediate results, including attention and loss.
         """
+        if self.task_type == 'survival':
+            return self.forward_survival(h, label, censorship, loss_fn, attn_mask,
+                                         return_attention, return_slide_feats)
         wsi_feats, log_dict = self.forward_features(h, return_attention=return_attention)  # log dict contains attention
         logits = self.forward_head(wsi_feats)
         cls_loss = MIL.compute_loss(loss_fn, logits, label)
@@ -224,7 +224,10 @@ class TransformerModel(PreTrainedModel):
             num_attention_layers=config.num_attention_layers,
             num_heads=config.num_heads,
             encoder_mlp_dim=config.encoder_mlp_dim,
+            task_type=getattr(config, 'task_type', 'classification')
         )
+        config.task_type = self.model.task_type
+        config.n_bins = self.model.n_bins
         self.forward = self.model.forward
         self.forward_attention = self.model.forward_attention
         self.forward_features = self.model.forward_features

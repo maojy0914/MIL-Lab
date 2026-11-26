@@ -334,7 +334,7 @@ class DSMIL(nn.Module):
         classes_bag, _ = torch.max(classes, 0)
 
         if return_attn:
-            # 通过bag和inst综合判断
+            # Combine bag-level and instance-level predictions.
             if self.attn_index == 'max':
                 attn, _ = torch.max(classes, -1) if self.cls_attn else torch.max(A, -1)
             elif self.attn_index == 'label':
@@ -991,9 +991,9 @@ class RRTMIL(MIL):
             mask_ratio: float = 0.0,
             cls_attn: bool = True,
             attn_index: str = 'max',
-            **kwargs
+            task_type='classification', **kwargs
     ):
-        super().__init__(in_dim=in_dim, embed_dim=embed_dim, num_classes=num_classes)
+        super().__init__(in_dim=in_dim, embed_dim=embed_dim, num_classes=num_classes, task_type=task_type)
 
         patch_to_emb = [nn.Linear(in_dim, embed_dim)]
         if act.lower() == 'relu':
@@ -1028,7 +1028,7 @@ class RRTMIL(MIL):
         h, A = self.encoder(h, return_attn=True)
         return h, A
 
-    def forward_features(self, h: torch.Tensor, attn_mask=None):
+    def forward_features(self, h: torch.Tensor, attn_mask=None, return_attention=False):
         h, A = self.forward_attention(h, attn_mask=attn_mask, attn_only=False)
         return h, {'attention': A}
 
@@ -1040,8 +1040,11 @@ class RRTMIL(MIL):
                 label: torch.LongTensor = None,
                 attn_mask=None,
                 return_attention: bool = False,
-                return_slide_feats: bool = False) -> tuple[dict, dict]:
+                return_slide_feats: bool = False, censorship=None) -> tuple[dict, dict]:
 
+        if self.task_type == 'survival':
+            return self.forward_survival(h, label, censorship, loss_fn, attn_mask,
+                                         return_attention, return_slide_feats)
         h, log_dict = self.forward_features(h, attn_mask=attn_mask)
         logits = self.forward_head(h)
 
@@ -1099,7 +1102,6 @@ class RRTMILConfig(PretrainedConfig):
         self.embed_dim = embed_dim
         self.act = act
         self.num_classes = num_classes
-        self.num_classes = num_classes  # alias for compatibility
         self.dropout = dropout
         self.pos_pos = pos_pos
         self.pos = pos
@@ -1134,6 +1136,8 @@ class RRTMILModel(PreTrainedModel):
 
     def __init__(self, config: RRTMILConfig, **kwargs):
         self.config = config
+        for key, value in kwargs.items():
+            setattr(config, key, value)
         super().__init__(config)
         self.model = RRTMIL(
             in_dim=config.in_dim,
@@ -1166,8 +1170,11 @@ class RRTMILModel(PreTrainedModel):
             min_region_num=config.min_region_num,
             qkv_bias=config.qkv_bias,
             shift_size=config.shift_size,
-            no_norm=config.no_norm
+            no_norm=config.no_norm,
+            task_type=getattr(config, 'task_type', 'classification')
         )
+        config.task_type = self.model.task_type
+        config.n_bins = self.model.n_bins
         self.forward = self.model.forward
         self.forward_attention = self.model.forward_attention
         self.forward_features = self.model.forward_features

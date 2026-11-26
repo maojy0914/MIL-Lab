@@ -34,9 +34,8 @@ class ABMIL(MIL):
             dropout: float = 0.25,
             attn_dim: int = 384,
             gate: int = True,
-            num_classes: int = 2,
-    ):
-        super().__init__(in_dim=in_dim, embed_dim=embed_dim, num_classes=num_classes)
+            num_classes: int = 2, task_type='classification'):
+        super().__init__(in_dim=in_dim, embed_dim=embed_dim, num_classes=num_classes, task_type=task_type)
         self.patch_embed = create_mlp(
             in_dim=in_dim,
             hid_dims=[embed_dim] *
@@ -119,7 +118,7 @@ class ABMIL(MIL):
                 label: torch.LongTensor = None,
                 attn_mask=None,
                 return_attention: bool = False,
-                return_slide_feats: bool = False) -> torch.Tensor:
+                return_slide_feats: bool = False, censorship=None) -> torch.Tensor:
         """
         Forward pass for ABMIL.
 
@@ -132,6 +131,9 @@ class ABMIL(MIL):
         Returns:
             Tuple of (results_dict, log_dict) with logits and loss.
         """
+        if self.task_type == 'survival':
+            return self.forward_survival(h, label, censorship, loss_fn, attn_mask,
+                                         return_attention, return_slide_feats)
         wsi_feats, log_dict = self.forward_features(h, attn_mask=attn_mask, return_attention=return_attention)
         logits = self.forward_head(wsi_feats)
         cls_loss = MIL.compute_loss(loss_fn, logits, label)
@@ -220,8 +222,11 @@ class ABMILModel(PreTrainedModel):
             dropout=config.dropout,
             attn_dim=config.attn_dim,
             gate=config.gate,
-            num_classes=config.num_classes
+            num_classes=config.num_classes,
+            task_type=getattr(config, 'task_type', 'classification')
         )
+        config.task_type = self.model.task_type
+        config.n_bins = self.model.n_bins
         self.forward = self.model.forward
         self.forward_attention = self.model.forward_attention
         self.forward_features = self.model.forward_features

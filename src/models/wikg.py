@@ -54,7 +54,7 @@ class WIKGConfig(PretrainedConfig):
 # --- 2. Core WIKG-MIL Model ---
 class WIKGMIL(MIL):
     def __init__(self, in_dim: int = 1024, embed_dim: int = 512, num_classes: int = 2, agg_type: str = 'bi-interaction',
-                 pool: str = 'attn', dropout: float = 0.25, act: str = 'leaky_relu', topk: int = 6, **kwargs):
+                 pool: str = 'attn', dropout: float = 0.25, act: str = 'leaky_relu', topk: int = 6, task_type='classification', **kwargs):
         """
         Initializes the WIKGMIL model.
 
@@ -82,7 +82,7 @@ class WIKGMIL(MIL):
         self.dropout = dropout
         self.act = act
 
-        super().__init__(in_dim=in_dim, embed_dim=embed_dim, num_classes=num_classes)
+        super().__init__(in_dim=in_dim, embed_dim=embed_dim, num_classes=num_classes, task_type=task_type)
         for k, v in kwargs.items():
             setattr(self, k, v)
 
@@ -202,7 +202,8 @@ class WIKGMIL(MIL):
 
         return embedding, full_attn
 
-    def forward_features(self, h: torch.Tensor, attn_mask: torch.Tensor = None) -> torch.Tensor:
+    def forward_features(self, h: torch.Tensor, attn_mask: torch.Tensor = None,
+                         return_attention: bool = False) -> torch.Tensor:
         """
         Extracts slide-level features from input tensor using attention-based aggregation.
 
@@ -233,8 +234,7 @@ class WIKGMIL(MIL):
                 label: torch.LongTensor = None,
                 attn_mask: torch.Tensor = None,
                 return_attention: bool = False,
-                return_slide_feats: bool = False,
-                ) -> torch.Tensor:
+                return_slide_feats: bool = False, censorship=None) -> torch.Tensor:
         """
         Forward pass for the WIKGMIL model.
 
@@ -251,6 +251,9 @@ class WIKGMIL(MIL):
                 - results_dict: Dictionary containing logits and loss.
                 - log_dict: Dictionary containing attention weights, loss, and optionally slide features.
         """
+        if self.task_type == 'survival':
+            return self.forward_survival(h, label, censorship, loss_fn, attn_mask,
+                                         return_attention, return_slide_feats)
         h, log_dict = self.forward_features(h, attn_mask=attn_mask)
         logits = self.forward_head(h)
 
@@ -285,9 +288,12 @@ class WIKGMILModel(PreTrainedModel):
             dropout=config.dropout,
             act=config.act,
             topk=config.topk,
+            task_type=getattr(config, 'task_type', 'classification')
         )
 
         # Delegate forward methods to the internal model
+        config.task_type = self.model.task_type
+        config.n_bins = self.model.n_bins
         self.forward = self.model.forward
         self.forward_attention = self.model.forward_attention
         self.forward_features = self.model.forward_features

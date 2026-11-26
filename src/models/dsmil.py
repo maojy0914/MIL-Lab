@@ -81,9 +81,8 @@ class DSMIL(MIL):
             dropout: float = 0.25,
             attn_dim: int = 384,
             dropout_v: float = 0.0,
-            num_classes: int = 2
-    ):
-        super().__init__(in_dim=in_dim, embed_dim=embed_dim, num_classes=num_classes)
+            num_classes: int = 2, task_type='classification'):
+        super().__init__(in_dim=in_dim, embed_dim=embed_dim, num_classes=num_classes, task_type=task_type)
         self.patch_embed = create_mlp(
             in_dim=in_dim,
             hid_dims=[embed_dim] * (num_fc_layers - 1),
@@ -111,7 +110,18 @@ class DSMIL(MIL):
         pass
 
     def initialize_classifier(self, num_classes: Optional[int] = None):
+        num_classes = self.num_classes if num_classes is None else num_classes
+        self.num_classes = num_classes
+        self.i_classifier = IClassifier(in_dim=self.embed_dim, num_classes=num_classes)
         self.classifier = nn.Conv1d(num_classes, num_classes, kernel_size=self.embed_dim)
+
+    def survival_logits(self, h, return_attention=False, return_slide_feats=False):
+        features, intermeds = self.forward_features(h, return_attention=return_attention)
+        logits = 0.5 * (self.forward_head(features) + intermeds['instance_classes'].max(dim=1).values)
+        logs = {'attention': intermeds['attention']} if return_attention else {}
+        if return_slide_feats:
+            logs['slide_feats'] = features
+        return logits, logs
 
     def forward_head(self, slide_feats: torch.Tensor) -> torch.Tensor:
         logits = self.classifier(slide_feats)  # B x C x 1
@@ -119,7 +129,10 @@ class DSMIL(MIL):
 
     def forward(self, h: torch.Tensor, label: torch.LongTensor = None, loss_fn: nn.Module = None,
                 attn_mask=None, return_attention: bool = False,
-                return_slide_feats: bool = False) -> tuple[dict, dict]:
+                return_slide_feats: bool = False, censorship=None) -> tuple[dict, dict]:
+        if self.task_type == 'survival':
+            return self.forward_survival(h, label, censorship, loss_fn, attn_mask,
+                                         return_attention, return_slide_feats)
         slide_feats, intermeds = self.forward_features(h, attn_mask=attn_mask, return_attention=return_attention)
         max_instance_logits, _ = torch.max(intermeds['instance_classes'], 1)
         bag_logits = self.forward_head(slide_feats)
@@ -176,9 +189,12 @@ class DSMILModel(PreTrainedModel):
             dropout=config.dropout,
             attn_dim=config.attn_dim,
             dropout_v=config.dropout_v,
-            num_classes=config.num_classes
+            num_classes=config.num_classes,
+            task_type=getattr(config, 'task_type', 'classification')
         )
         # Expose the inner model's forward methods
+        config.task_type = self.model.task_type
+        config.n_bins = self.model.n_bins
         self.forward = self.model.forward
         self.forward_features = self.model.forward_features
         self.initialize_classifier = self.model.initialize_classifier
